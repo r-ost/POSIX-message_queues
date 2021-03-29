@@ -79,7 +79,7 @@ void workWithNArgument(generatorArguments_t *arg, char **msgs, int n)
     // don't do anything with it)
     for (int i = 0; i < MQ_COUNT; i++)
     {
-        arg->mq_ds[i] = mq_open(arg->mq_names[i], O_RDWR | O_CREAT, 0666, arg->attr);
+        arg->mq_ds[i] = TEMP_FAILURE_RETRY(mq_open(arg->mq_names[i], O_RDWR | O_CREAT, 0666, arg->attr));
 
         if (arg->mq_ds[i] == -1)
             ERR("mq_open");
@@ -93,7 +93,7 @@ void workWithoutNArgument(generatorArguments_t *arg)
 {
     for (int i = 0; i < 2; i++)
     {
-        arg->mq_ds[i] = mq_open(arg->mq_names[i], O_RDWR, 0666, &arg->attr);
+        arg->mq_ds[i] = TEMP_FAILURE_RETRY(mq_open(arg->mq_names[i], O_RDWR));
         if (arg->mq_ds[i] == -1)
         {
             if (errno == ENOENT) // mq doesn't exist
@@ -112,15 +112,21 @@ void generatorMainWork(generatorArguments_t *arg)
     char receivedMsg[BUF_SIZE];
     char outMsg[BUF_SIZE];
 
+    // sprawdzic EINT
     if (mq_receive(arg->mq_ds[0], receivedMsg, BUF_SIZE, NULL) == -1)
         ERR("mq_receive");
+    
 
     printf("Generator received %s\n", receivedMsg);
+
+    // while ...
     sleep(arg->t);
 
     if (rand() % (100) < arg->p) // write to q2 with priority 1
     {
         int pid = getpid();
+
+        // snprintf
         sprintf(outMsg, "%d/", pid);
         int len = strlen(outMsg);
         for (int i = 0; i < Q1_CHARS_COUNT; i++)
@@ -134,12 +140,12 @@ void generatorMainWork(generatorArguments_t *arg)
         outMsg[len + Q2_CHARS_COUNT] = '\0';
 
         printf("Sending to Q2: %s\n", outMsg);
-        if (mq_send(arg->mq_ds[1], outMsg, BUF_SIZE, 1) == -1)
+        if (TEMP_FAILURE_RETRY(mq_send(arg->mq_ds[1], outMsg, BUF_SIZE, 1)) == -1)
             ERR("mq_send");
     }
 
     // write to q1 received message
-    if (mq_send(arg->mq_ds[0], receivedMsg, BUF_SIZE, 0) == -1)
+    if (TEMP_FAILURE_RETRY(mq_send(arg->mq_ds[0], receivedMsg, BUF_SIZE, 0)) == -1)
         ERR("mq_send");
 }
 
@@ -194,19 +200,19 @@ int main(int argc, char *argv[])
     {
         if (exitApp == 1)
             break;
+
         generatorMainWork(&generatorArgs);
     }
 
-    if (mq_close(ds[0]))
-        ERR("mq_close");
-    if (mq_close(ds[1]))
-        ERR("mq_close");
+    // sprwadzic
+    mq_close(ds[0]);
+    mq_close(ds[1]);
 
     if (msgs != NULL)
     {
-        free(msgs);
         for (int i = 0; i < n; i++)
             free(msgs[i]);
+        free(msgs);
     }
 
     return EXIT_SUCCESS;

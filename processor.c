@@ -61,7 +61,7 @@ void mq_handler(int sig, siginfo_t *info, void *p)
 
 void openMQ(mqd_t *ds, char *name)
 {
-    if ((*ds = mq_open(name, O_RDWR)) == -1)
+    if ((*ds = TEMP_FAILURE_RETRY(mq_open(name, O_RDWR))) == -1)
     {
         if (errno == ENOENT) // message queue doesn't exist
         {
@@ -81,13 +81,13 @@ void sendMessage(processorArguments_t *arg)
     int bufOut_len = strlen(arg->bufOut);
     int bufIn_len = strlen(arg->bufIn);
     for (int i = 4; i >= 0; i--)
-        arg->bufOut[bufOut_len + i] = arg->bufIn[bufIn_len - 1 - i];
+        arg->bufOut[bufOut_len + i] = arg->bufIn[bufIn_len - 1  - (4 - i)];
     arg->bufOut[bufOut_len + 5] = '\0';
 
     if (rand() % 100 < arg->p)
     {
         printf("Processor sending: %s\n", arg->bufOut);
-        if (mq_send(arg->q2_ds, arg->bufOut, arg->msg_size, 0) == -1)
+        if (TEMP_FAILURE_RETRY(mq_send(arg->q2_ds, arg->bufOut, arg->msg_size, 0)) == -1)
             ERR("mq_send");
     }
 }
@@ -110,7 +110,9 @@ void processorWork(processorArguments_t *arg)
 
         if (timeout == 0)
         {
-            if (mq_timedreceive(arg->q2_ds, arg->bufIn, arg->msg_size, NULL, &ts) == -1)
+
+            // zmienic na t sekund
+            if (TEMP_FAILURE_RETRY(mq_timedreceive(arg->q2_ds, arg->bufIn, arg->msg_size, NULL, &ts)) == -1)
             {
                 if (errno == ETIMEDOUT)
                 {
@@ -131,7 +133,8 @@ void processorWork(processorArguments_t *arg)
         if (strlen(arg->bufIn) > 0)
             printf("Processor received: %s\n", arg->bufIn);
 
-        sendMessage(arg);
+        if (timeout != 1)
+            sendMessage(arg);
     }
 }
 
@@ -154,8 +157,8 @@ int main(int argc, char *argv[])
         ERR("mq_getattr");
     int msg_size = attr.mq_msgsize;
 
-    char *buf = (char *)malloc(sizeof(char) * msg_size);
-    if (buf == NULL)
+    char *bufIn = (char *)malloc(sizeof(char) * msg_size);
+    if (bufIn == NULL)
         ERR("malloc");
     char *bufOut = malloc(msg_size * sizeof(char));
     if (bufOut == NULL)
@@ -165,7 +168,7 @@ int main(int argc, char *argv[])
     sethandler(sigint_handler, SIGINT);
 
     processorArguments_t processorArgs = {
-        .bufIn = buf,
+        .bufIn = bufIn,
         .bufOut = bufOut,
         .msg_size = msg_size,
         .p = p,
@@ -176,7 +179,7 @@ int main(int argc, char *argv[])
 
     mq_close(q2_ds);
 
-    free(buf);
+    free(bufIn);
     free(bufOut);
 
     return EXIT_SUCCESS;
