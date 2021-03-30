@@ -23,7 +23,7 @@
 
 void usage(void)
 {
-    printf("USAGE: \n");
+    printf("USAGE: t[0-10] p[0,100] q1[string] q2[string] (n[1,10] - optional)\n");
     exit(EXIT_FAILURE);
 }
 
@@ -59,7 +59,7 @@ void sendMessages(generatorArguments_t *arg, char **msgs, int n)
     {
         int pid = getpid();
 
-        sprintf(msgs[i], "%d/", pid);
+        snprintf(msgs[i], 64, "%d/", pid);
         int len = strlen(msgs[i]);
         for (int j = 0; j < Q1_CHARS_COUNT; j++)
             msgs[i][len + j] = rand() % ('z' - 'a' + 1) + 'a';
@@ -91,7 +91,7 @@ void workWithNArgument(generatorArguments_t *arg, char **msgs, int n)
 
 void workWithoutNArgument(generatorArguments_t *arg)
 {
-    for (int i = 0; i < 2; i++)
+    for (int i = 0; i < MQ_COUNT; i++)
     {
         arg->mq_ds[i] = TEMP_FAILURE_RETRY(mq_open(arg->mq_names[i], O_RDWR));
         if (arg->mq_ds[i] == -1)
@@ -112,22 +112,36 @@ void generatorMainWork(generatorArguments_t *arg)
     char receivedMsg[BUF_SIZE];
     char outMsg[BUF_SIZE];
 
-    // sprawdzic EINT
     if (mq_receive(arg->mq_ds[0], receivedMsg, BUF_SIZE, NULL) == -1)
-        ERR("mq_receive");
-    
+    {
+        if (errno != EINTR)
+            ERR("mq_receive");
+        else
+            return;
+    }
 
     printf("Generator received %s\n", receivedMsg);
 
-    // while ...
-    sleep(arg->t);
+
+    struct timespec ts_sleep = {.tv_nsec = 0, .tv_sec = arg->t};
+    struct timespec rts_sleep = {0, 0};
+
+    do
+    {
+        if (nanosleep(&ts_sleep, &rts_sleep) < 0)
+        {
+            if (errno == EINTR && exitApp == 1) // exit
+                return;
+        }
+        rts_sleep = ts_sleep;
+    } while (rts_sleep.tv_nsec == 0 && rts_sleep.tv_sec == 0);
+
 
     if (rand() % (100) < arg->p) // write to q2 with priority 1
     {
         int pid = getpid();
 
-        // snprintf
-        sprintf(outMsg, "%d/", pid);
+        snprintf(outMsg, 64, "%d/", pid);
         int len = strlen(outMsg);
         for (int i = 0; i < Q1_CHARS_COUNT; i++)
             outMsg[len + i] = receivedMsg[strlen(receivedMsg) - Q1_CHARS_COUNT + i];
@@ -204,9 +218,10 @@ int main(int argc, char *argv[])
         generatorMainWork(&generatorArgs);
     }
 
-    // sprwadzic
-    mq_close(ds[0]);
-    mq_close(ds[1]);
+    if (mq_close(ds[0]))
+        ERR("mq_close");
+    if (mq_close(ds[1]))
+        ERR("mq_close");
 
     if (msgs != NULL)
     {

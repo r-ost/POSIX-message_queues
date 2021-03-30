@@ -22,7 +22,7 @@
 
 void usage(void)
 {
-    printf("USAGE: \n");
+    printf("USAGE: t[1,10] p[0,100] q2[string]\n");
     exit(EXIT_FAILURE);
 }
 
@@ -38,25 +38,20 @@ typedef struct processorArguments_t
 
 volatile sig_atomic_t exitApp = 0;
 
-void sethandler(void (*f)(int, siginfo_t *, void *), int sigNo)
+int sethandler(void (*f)(int, siginfo_t *, void *), int sigNo)
 {
     struct sigaction act;
     memset(&act, 0, sizeof(struct sigaction));
     act.sa_sigaction = f;
     act.sa_flags = SA_SIGINFO;
     if (-1 == sigaction(sigNo, &act, NULL))
-        ERR("sigaction");
+        return -1;
+    return 0;
 }
 
 void sigint_handler(int sig, siginfo_t *info, void *p)
 {
     exitApp = 1;
-}
-
-void mq_handler(int sig, siginfo_t *info, void *p)
-{
-    int *timeout = (info->si_value.sival_ptr);
-    *timeout = 0;
 }
 
 void openMQ(mqd_t *ds, char *name)
@@ -77,11 +72,11 @@ void sendMessage(processorArguments_t *arg)
 {
     int pid = getpid();
 
-    sprintf(arg->bufOut, "%d/000/", pid);
+    snprintf(arg->bufOut, 64, "%d/000/", pid);
     int bufOut_len = strlen(arg->bufOut);
     int bufIn_len = strlen(arg->bufIn);
     for (int i = 4; i >= 0; i--)
-        arg->bufOut[bufOut_len + i] = arg->bufIn[bufIn_len - 1  - (4 - i)];
+        arg->bufOut[bufOut_len + i] = arg->bufIn[bufIn_len - 1 - (4 - i)];
     arg->bufOut[bufOut_len + 5] = '\0';
 
     if (rand() % 100 < arg->p)
@@ -94,47 +89,62 @@ void sendMessage(processorArguments_t *arg)
 
 void processorWork(processorArguments_t *arg)
 {
-    struct timespec ts = {ts.tv_nsec = 0, ts.tv_sec = 1};
+    struct timespec ts;
 
+    // time since UNIX epoch !!!
+    clock_gettime(CLOCK_REALTIME, &ts);
+    ts.tv_sec += 1;
     int timeout = 0;
-
-    static struct sigevent not ;
-    not .sigev_notify = SIGEV_SIGNAL;
-    not .sigev_signo = SIGRTMIN;
-    not .sigev_value.sival_ptr = &timeout;
 
     for (;;)
     {
         if (exitApp == 1)
             break;
 
-        if (timeout == 0)
+        if (mq_timedreceive(arg->q2_ds, arg->bufIn, arg->msg_size, NULL, &ts) == -1)
         {
-
-            // zmienic na t sekund
-            if (TEMP_FAILURE_RETRY(mq_timedreceive(arg->q2_ds, arg->bufIn, arg->msg_size, NULL, &ts)) == -1)
+            if (errno == ETIMEDOUT)
             {
-                if (errno == ETIMEDOUT)
-                {
+                if (timeout == 0)
                     timeout = 1;
-                    if (mq_notify(arg->q2_ds, &not ) < 0)
-                        ERR("mq_notify");
-
+                if (timeout == 1)
+                {
+                    printf("Timeout! ");
+                    printf("Previous message: %s\n", arg->bufIn);
+                    clock_gettime(CLOCK_REALTIME, &ts);
+                    ts.tv_sec += arg->t;
                     continue;
                 }
-                else
-                    ERR("mq_receive");
             }
+            else if (errno == EINTR)
+            {
+                continue;
+            }
+            else
+                ERR("mq_receive");
         }
 
-        sleep(arg->t);
+        clock_gettime(CLOCK_REALTIME, &ts);
+        ts.tv_sec += 1;
+        timeout = 0;
 
+        struct timespec ts_sleep = {.tv_nsec = 0, .tv_sec = arg->t};
+        struct timespec rts_sleep = {0, 0};
+        do
+        {
+            if(nanosleep(&ts_sleep, &rts_sleep) < 0)
+            {
+                if (errno == EINTR && exitApp == 1) // exit
+                    break;
+            }
+            rts_sleep = ts_sleep;
+        } while (rts_sleep.tv_nsec == 0 && rts_sleep.tv_sec == 0);
+        
 
         if (strlen(arg->bufIn) > 0)
             printf("Processor received: %s\n", arg->bufIn);
 
-        if (timeout != 1)
-            sendMessage(arg);
+        sendMessage(arg);
     }
 }
 
@@ -164,8 +174,8 @@ int main(int argc, char *argv[])
     if (bufOut == NULL)
         ERR("malloc");
 
-    sethandler(mq_handler, SIGRTMIN);
-    sethandler(sigint_handler, SIGINT);
+    if (sethandler(sigint_handler, SIGINT))
+        ERR("sethandler");
 
     processorArguments_t processorArgs = {
         .bufIn = bufIn,
@@ -177,7 +187,8 @@ int main(int argc, char *argv[])
 
     processorWork(&processorArgs);
 
-    mq_close(q2_ds);
+    if (mq_close(q2_ds))
+        ERR("mq_close");
 
     free(bufIn);
     free(bufOut);
